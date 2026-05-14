@@ -19,6 +19,14 @@ It supports:
 - Microsoft ODBC Driver for SQL Server
 - Access to both MSSQL databases
 
+```bash
+sudo apt install -y unixodbc unixodbc-dev
+sudo apt install odbcinst
+sudo ACCEPT_EULA=Y apt install -y msodbcsql18
+```
+```bash
+```
+
 ## Setup
 
 Clone the repository:

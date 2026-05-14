@@ -3,7 +3,7 @@ import sys
 
 from mssql_copy.config import load_config
 from mssql_copy.copy import copy_all_tables
-from mssql_copy.db import connect
+from mssql_copy.db import connect, ensure_schema_exists
 
 
 def parse_args() -> argparse.Namespace:
@@ -30,6 +30,7 @@ def main() -> int:
         target_conn = connect(config.target, config.options)
 
         try:
+            ensure_schema_exists(target_conn, config.target.schema)
             copy_all_tables(source_conn, target_conn, config)
         finally:
             source_conn.close()
@@ -39,9 +40,15 @@ def main() -> int:
         return 0
 
     except Exception as error:
-        print(f"\nCopy failed: {error}", file=sys.stderr)
-        return 1
+        import traceback
 
+        print("\nCopy failed.", file=sys.stderr)
+        print(f"Error type: {type(error).__name__}", file=sys.stderr)
+        print(f"Error repr: {repr(error)}", file=sys.stderr)
+        print("\nTraceback:", file=sys.stderr)
+        traceback.print_exc()
+
+        return 1
 
 if __name__ == "__main__":
     raise SystemExit(main())

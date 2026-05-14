@@ -21,7 +21,9 @@ class Options:
     batch_size: int
     clear_target_tables_first: bool
     trust_server_certificate: bool
+    encrypt: bool
     driver: str
+    fast_executemany: bool
 
 
 @dataclass(frozen=True)
@@ -78,7 +80,12 @@ def load_config(config_path: str) -> AppConfig:
             trust_server_certificate=bool(
                 options_raw.get("trust_server_certificate", True)
             ),
+            encrypt=bool(
+                options_raw.get("encrypt", False)
+            ),
+
             driver=options_raw.get("driver", "ODBC Driver 18 for SQL Server"),
+            fast_executemany=bool(options_raw.get("fast_executemany", False)),
         ),
         tables=list(raw["tables"]),
     )
