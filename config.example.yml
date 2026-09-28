@@ -16,9 +16,22 @@ options:
   batch_size: 1000
   clear_target_tables_first: false
   trust_server_certificate: true
+  encrypt: false
   driver: "ODBC Driver 18 for SQL Server"
+  fast_executemany: false
+
+# Supported modes:
+# - include_tables: copy only the explicit list below. This is the existing/default mode.
+# - copy_all_from_schema: discover and copy every base table from source.schema,
+#   except the optional exclude_tables list.
+mode: include_tables
 
 tables:
   - Users
   - Orders
   - OrderItems
+
+# Used only when mode: copy_all_from_schema
+exclude_tables:
+  - Users
+

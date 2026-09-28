@@ -7,6 +7,11 @@ import yaml
 from dotenv import load_dotenv
 
 
+INCLUDE_TABLES_MODE = "include_tables"
+COPY_ALL_FROM_SCHEMA_MODE = "copy_all_from_schema"
+SUPPORTED_COPY_MODES = {INCLUDE_TABLES_MODE, COPY_ALL_FROM_SCHEMA_MODE}
+
+
 @dataclass(frozen=True)
 class DatabaseConfig:
     server: str
@@ -31,7 +36,9 @@ class AppConfig:
     source: DatabaseConfig
     target: DatabaseConfig
     options: Options
+    copy_mode: str
     tables: List[str]
+    exclude_tables: List[str]
 
 
 def _required_env(name: str) -> str:
@@ -56,6 +63,18 @@ def _load_db_config(raw: dict) -> DatabaseConfig:
     )
 
 
+def _load_table_list(raw: dict, key: str) -> List[str]:
+    values = raw.get(key, [])
+
+    if values is None:
+        return []
+
+    if not isinstance(values, list):
+        raise RuntimeError(f"Config value '{key}' must be a list.")
+
+    return [str(value) for value in values]
+
+
 def load_config(config_path: str) -> AppConfig:
     load_dotenv()
 
@@ -66,6 +85,26 @@ def load_config(config_path: str) -> AppConfig:
 
     with path.open("r", encoding="utf-8") as file:
         raw = yaml.safe_load(file)
+
+    if raw is None:
+        raise RuntimeError(f"Config file is empty: {config_path}")
+
+    copy_mode = raw.get("mode", INCLUDE_TABLES_MODE)
+
+    if copy_mode not in SUPPORTED_COPY_MODES:
+        supported_modes = ", ".join(sorted(SUPPORTED_COPY_MODES))
+        raise RuntimeError(
+            f"Unsupported copy mode '{copy_mode}'. Supported modes: {supported_modes}"
+        )
+
+    tables = _load_table_list(raw, "tables")
+    exclude_tables = _load_table_list(raw, "exclude_tables")
+
+    if copy_mode == INCLUDE_TABLES_MODE and not tables:
+        raise RuntimeError(
+            "Config value 'tables' must contain at least one table "
+            "when mode is 'include_tables'."
+        )
 
     options_raw = raw.get("options", {})
 
@@ -87,6 +126,8 @@ def load_config(config_path: str) -> AppConfig:
             driver=options_raw.get("driver", "ODBC Driver 18 for SQL Server"),
             fast_executemany=bool(options_raw.get("fast_executemany", False)),
         ),
-        tables=list(raw["tables"]),
+        copy_mode=copy_mode,
+        tables=tables,
+        exclude_tables=exclude_tables,
     )
 

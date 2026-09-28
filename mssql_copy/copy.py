@@ -1,11 +1,17 @@
 import pyodbc
 
-from mssql_copy.config import AppConfig
+from mssql_copy.config import (
+    AppConfig,
+    COPY_ALL_FROM_SCHEMA_MODE,
+    INCLUDE_TABLES_MODE,
+)
 from mssql_copy.db import (
+    create_table_like,
     full_table_name,
     get_columns,
     get_identity_column,
     get_insertable_columns,
+    get_schema_tables,
     quote_name,
     table_exists,
 )
@@ -16,7 +22,7 @@ def copy_all_tables(
     target_conn: pyodbc.Connection,
     config: AppConfig,
 ) -> None:
-    pending_tables = list(config.tables)
+    pending_tables = _resolve_tables_to_copy(source_conn, config)
     failed_errors: dict[str, Exception] = {}
     pass_number = 1
 
@@ -83,6 +89,55 @@ def copy_all_tables(
         pass_number += 1
 
 
+def _resolve_tables_to_copy(
+    source_conn: pyodbc.Connection,
+    config: AppConfig,
+) -> list[str]:
+    if config.copy_mode == INCLUDE_TABLES_MODE:
+        print("Copy mode: include_tables")
+        print(f"Configured tables: {len(config.tables)}")
+        return list(config.tables)
+
+    if config.copy_mode == COPY_ALL_FROM_SCHEMA_MODE:
+        print("Copy mode: copy_all_from_schema")
+        print(f"Discovering tables in source schema: {config.source.schema}")
+
+        schema_tables = get_schema_tables(source_conn, config.source.schema)
+        exclude_tables = set(config.exclude_tables)
+        tables = [table for table in schema_tables if table not in exclude_tables]
+        excluded_existing_tables = [
+            table
+            for table in schema_tables
+            if table in exclude_tables
+        ]
+        unknown_exclusions = sorted(exclude_tables - set(schema_tables))
+
+        print(f"Discovered source tables: {len(schema_tables)}")
+
+        if excluded_existing_tables:
+            print(
+                "Excluded tables: "
+                + ", ".join(excluded_existing_tables)
+            )
+
+        if unknown_exclusions:
+            print(
+                "Warning: excluded table(s) not found in source schema: "
+                + ", ".join(unknown_exclusions)
+            )
+
+        if not tables:
+            raise RuntimeError(
+                f"No source tables found to copy from schema '{config.source.schema}' "
+                "after applying exclusions."
+            )
+
+        print(f"Tables selected for copy: {len(tables)}")
+        return tables
+
+    raise RuntimeError(f"Unsupported copy mode: {config.copy_mode}")
+
+
 def copy_table(
     source_conn: pyodbc.Connection,
     target_conn: pyodbc.Connection,
@@ -98,7 +153,13 @@ def copy_table(
     print(f"\nCopying {source_table_ref} -> {target_table_ref}")
 
     _validate_table_exists(source_conn, source_schema, table, "source")
-    _validate_table_exists(target_conn, target_schema, table, "target")
+    _ensure_target_table_exists(
+        source_conn=source_conn,
+        target_conn=target_conn,
+        source_schema=source_schema,
+        target_schema=target_schema,
+        table=table,
+    )
 
     source_columns = get_columns(source_conn, source_schema, table)
     target_insertable_columns = get_insertable_columns(
@@ -112,7 +173,7 @@ def copy_table(
         for column in source_columns
         if column in target_insertable_columns
     ]
-    
+
     skipped_target_columns = [
         column
         for column in source_columns
@@ -135,17 +196,13 @@ def copy_table(
     column_list_sql = ", ".join(quote_name(column) for column in common_columns)
     placeholders = ", ".join("?" for _ in common_columns)
 
-    order_by_sql = (
-        quote_name(identity_column)
-        if identity_column and identity_column in common_columns
-        else column_list_sql
-    )
-
     source_sql = f"""
         SELECT {column_list_sql}
         FROM {source_table_ref}
-        ORDER BY {order_by_sql}
     """
+
+    if identity_column and identity_column in common_columns:
+        source_sql += f"\n        ORDER BY {quote_name(identity_column)}"
 
     insert_sql = f"""
         INSERT INTO {target_table_ref} ({column_list_sql})
@@ -187,16 +244,16 @@ def copy_table(
                     "MemoryError during batch insert. "
                     "Retrying this batch row-by-row without fast_executemany."
                 )
-            
+
                 target_cursor.fast_executemany = False
-            
+
                 for row in rows:
                     target_cursor.execute(insert_sql, row)
-            
+
             total += len(rows)
-            
+
             print(f"Inserted {total} rows")
-            
+
         if identity_insert_enabled:
             print(f"Disabling IDENTITY_INSERT for {target_table_ref}")
             target_cursor.execute(f"SET IDENTITY_INSERT {target_table_ref} OFF")
@@ -243,6 +300,33 @@ def _validate_table_exists(
         raise RuntimeError(f"Table does not exist in {label}: {schema}.{table}")
 
 
+def _ensure_target_table_exists(
+    source_conn: pyodbc.Connection,
+    target_conn: pyodbc.Connection,
+    source_schema: str,
+    target_schema: str,
+    table: str,
+) -> None:
+    if table_exists(target_conn, target_schema, table):
+        return
+
+    source_table_ref = full_table_name(source_schema, table)
+    target_table_ref = full_table_name(target_schema, table)
+
+    print(
+        f"Target table {target_table_ref} does not exist. "
+        f"Creating it from {source_table_ref}."
+    )
+
+    create_table_like(
+        source_conn=source_conn,
+        target_conn=target_conn,
+        source_schema=source_schema,
+        target_schema=target_schema,
+        table=table,
+    )
+
+
 def _try_disable_identity_insert(
     conn: pyodbc.Connection,
     table_ref: str,
@@ -275,3 +359,4 @@ def _is_foreign_key_error(error: Exception) -> bool:
         or "conflicted with the FOREIGN KEY" in error_text
         or "(547)" in error_text
     )
+
